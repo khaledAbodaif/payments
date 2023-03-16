@@ -7,6 +7,10 @@ use Illuminate\Contracts\Foundation\Application;
 use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
 use Illuminate\Routing\Redirector;
+use Nafezly\Payments\Enums\PaymentStatusEnum;
+use Nafezly\Payments\Enums\PaymentValidationEnum;
+use Nafezly\Payments\Interfaces\IPaymentInterface;
+use Nafezly\Payments\Interfaces\PaymentAbstract;
 use Nafezly\Payments\Interfaces\PaymentInterface;
 use PayPalCheckoutSdk\Core\PayPalHttpClient;
 use PayPalCheckoutSdk\Core\SandboxEnvironment;
@@ -16,8 +20,10 @@ use PayPalCheckoutSdk\Orders\OrdersCaptureRequest;
 use PayPalCheckoutSdk\Orders\OrdersGetRequest;
 use Nafezly\Payments\Classes\BaseController;
 
-class PayPalPayment extends BaseController implements PaymentInterface
+class PayPalPayment extends PaymentAbstract implements IPaymentInterface
 {
+    public const PAYMENT_METHOD = "PayPal";
+
     private $paypal_client_id;
     private $paypal_secret;
     private $verify_route_name;
@@ -27,6 +33,8 @@ class PayPalPayment extends BaseController implements PaymentInterface
 
     public function __construct()
     {
+        parent::__construct();
+
         $this->paypal_client_id = config('nafezly-payments.PAYPAL_CLIENT_ID');
         $this->paypal_secret = config('nafezly-payments.PAYPAL_SECRET');
         $this->verify_route_name = config('nafezly-payments.VERIFY_ROUTE_NAME');
@@ -34,28 +42,21 @@ class PayPalPayment extends BaseController implements PaymentInterface
         $this->currency = config('nafezly-payments.PAYPAL_CURRENCY');
     }
 
-    /**
-     * @param $amount
-     * @param null $user_id
-     * @param null $user_first_name
-     * @param null $user_last_name
-     * @param null $user_email
-     * @param null $user_phone
-     * @param null $source
-     * @return array|Application|RedirectResponse|Redirector
-     */
-    public function pay($amount = null, $user_id = null, $user_first_name = null, $user_last_name = null, $user_email = null, $user_phone = null, $source = null)
+    public function pay():self
     {
-        $this->setPassedVariablesToGlobal($amount,$user_id,$user_first_name,$user_last_name,$user_email,$user_phone,$source);
-        $required_fields = ['amount'];
-        $this->checkRequiredFields($required_fields, 'PayPal');
+        $this->validations = array_merge(PaymentValidationEnum::PAY_VALIDATION, PaymentValidationEnum::THAWANI_PAY_VALIDATION);
 
+        try {
+
+            $this->validate();
+
+            $this->saveToPayment();
         if($this->paypal_mode=="live")
             $environment = new ProductionEnvironment($this->paypal_client_id, $this->paypal_secret);
         else
             $environment = new SandboxEnvironment($this->paypal_client_id, $this->paypal_secret);
 
-        
+
         $client = new PayPalHttpClient($environment);
 
         $request = new OrdersCreateRequest();
@@ -63,9 +64,9 @@ class PayPalPayment extends BaseController implements PaymentInterface
         $request->body = [
             "intent" => "CAPTURE",
             "purchase_units" => [[
-                "reference_id" => uniqid(),
+                "reference_id" => $this->response->request['transaction_code'],
                 "amount" => [
-                    "value" => $this->amount,
+                    "value" => $this->response->request['amount'],
                     "currency_code" => $this->currency
                 ]
             ]],
@@ -75,62 +76,52 @@ class PayPalPayment extends BaseController implements PaymentInterface
             ]
         ];
 
-        try {
             $response = json_decode(json_encode($client->execute($request)), true);
-            return [
-                'payment_id'=>$response['result']['id'],
-                'html' => "",
-                'redirect_url'=>collect($response['result']['links'])->where('rel', 'approve')->firstOrFail()['href']
-            ];
-        } catch (Exception $e) {
-            return [
-                'success' => false,
-                'message' => __('nafezly::messages.PAYMENT_FAILED'),
-                'process_data' => $e
-            ];
+            $this->response->redirect_url =collect($response['result']['links'])->where('rel', 'approve')->firstOrFail()['href'];
+
+
+        } catch (\Exception $e) {
+
+            $this->response->message = $e->getMessage();
+            $this->saveToLogs();
+
         }
+
+        return $this;
     }
 
-    /**
-     * @param Request $request
-     * @return array
-     */
-    public function verify(Request $request): array
+    public function verify(): self
     {
 
+        try {
         if($this->paypal_mode=="live")
             $environment = new ProductionEnvironment($this->paypal_client_id, $this->paypal_secret);
         else
             $environment = new SandboxEnvironment($this->paypal_client_id, $this->paypal_secret);
-            
+
         $client = new PayPalHttpClient($environment);
 
-        try {
-            $response = $client->execute(new OrdersCaptureRequest($request['token']) );
+            $response = $client->execute(new OrdersCaptureRequest($this->response->request['token']) );
             $result = json_decode(json_encode($response), true);
             if ($result['result']['status'] == "COMPLETED" && $result['statusCode']==201) {
-                return [
-                    'success' => true,
-                    'payment_id'=>$request['token'],
-                    'message' => __('nafezly::messages.PAYMENT_DONE'),
-                    'process_data' => $result
-                ];
+                $this->updateToPayment(PaymentStatusEnum::PAID);
+
+                $this->response->message = __("Paid Successfully");
+
 
             } else {
-                return [
-                    'success' => false,
-                    'payment_id'=>$request['token'],
-                    'message' => __('nafezly::messages.PAYMENT_FAILED'),
-                    'process_data' => $result
-                ];
+
+                $this->response->status = false;
+                $this->response->message = __('nafezly::messages.PAYMENT_FAILED_WITH_CODE', ['CODE' => $this->getErrorMessage($request['txn_response_code'])]);
+                $this->saveToLogs();
             }
-        } catch (Exception $e) {
-            return [
-                'success' => false,
-                'payment_id'=>$request['token'],
-                'message' => __('nafezly::messages.PAYMENT_FAILED'),
-                'process_data' => $e
-            ];
+
+        } catch (\Exception $e) {
+
+            $this->response->message = $e->getMessage();
+            $this->saveToLogs();
         }
+
+        return $this;
     }
 }

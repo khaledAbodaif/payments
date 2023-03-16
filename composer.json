@@ -1,5 +1,5 @@
 {
-  "name": "nafezly/payments",
+  "name": "khaleds/payments",
   "license": "MIT",
   "description": "Payment helper for Paypal, Paymob, Kashier, Hyperpay and Fawry",
   "keywords": [
@@ -23,6 +23,10 @@
     "ext-curl": "*"
   },
   "authors": [
+    {
+      "name": "khaled abodaif",
+      "email": "nafezly.com@gmail.com"
+  },
     {
       "name": "nafezly.com",
       "email": "nafezly.com@gmail.com"

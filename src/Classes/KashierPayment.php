@@ -4,11 +4,17 @@ namespace Nafezly\Payments\Classes;
 
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Http;
+use Nafezly\Payments\Enums\PaymentStatusEnum;
+use Nafezly\Payments\Enums\PaymentValidationEnum;
+use Nafezly\Payments\Interfaces\IPaymentInterface;
+use Nafezly\Payments\Interfaces\PaymentAbstract;
 use Nafezly\Payments\Interfaces\PaymentInterface;
 use Nafezly\Payments\Classes\BaseController;
 
-class KashierPayment extends BaseController implements PaymentInterface
+class KashierPayment  extends PaymentAbstract implements IPaymentInterface
 {
+    public const PAYMENT_METHOD = "Kashier";
+
     public  $kashier_url;
     public  $kashier_mode;
     private $kashier_account_key;
@@ -17,8 +23,10 @@ class KashierPayment extends BaseController implements PaymentInterface
     public  $app_name;
     private $verify_route_name;
 
-    public function __construct()
+    public function __construct() 
     {
+        parent::__construct();
+
         $this->kashier_url = config("nafezly-payments.KASHIER_URL");
         $this->kashier_mode = config("nafezly-payments.KASHIER_MODE");
         $this->kashier_account_key = config("nafezly-payments.KASHIER_ACCOUNT_KEY");
@@ -29,59 +37,57 @@ class KashierPayment extends BaseController implements PaymentInterface
         $this->verify_route_name = config('nafezly-payments.VERIFY_ROUTE_NAME');
     }
 
-    
-    /**
-     * @param $amount
-     * @param null $user_id
-     * @param null $user_first_name
-     * @param null $user_last_name
-     * @param null $user_email
-     * @param null $user_phone
-     * @param null $source
-     * @return string[]
-     */
-    public function pay($amount = null, $user_id = null, $user_first_name = null, $user_last_name = null, $user_email = null, $user_phone = null, $source = null): array
-    {
-        $this->setPassedVariablesToGlobal($amount,$user_id,$user_first_name,$user_last_name,$user_email,$user_phone,$source);
-        $required_fields = ['amount'];
-        $this->checkRequiredFields($required_fields, 'KASHIER');
 
-        $payment_id = uniqid();
+    public function pay():self
+    {
+        $this->validations = array_merge(PaymentValidationEnum::PAY_VALIDATION, PaymentValidationEnum::Kashier_VALIDATION);
+
+        try {
+
+            $this->validate();
+
+            $this->saveToPayment();
+        $payment_id = $this->response->request['transaction_code'];
 
         $mid = $this->kashier_account_key;
         $order_id = $payment_id;
         $secret = $this->kashier_iframe_key;
-        $path = "/?payment={$mid}.{$order_id}.{$this->amount}.{$this->currency}";
+        $path = "/?payment={$mid}.{$order_id}.{$this->response->request['amount']}.{$this->currency}";
         $hash = hash_hmac('sha256', $path, $secret);
 
         $data = [
             'mid' => $mid,
-            'amount' => $this->amount,
+            'amount' => $this->response->request['amount'],
             'currency' => $this->currency,
             'order_id' => $order_id,
             'path' => $path,
             'hash' => $hash,
-            'source'=>$source,
+            'source'=>$this->response->request['source'],
             'redirect_back' => route($this->verify_route_name, ['payment' => "kashier"])
         ];
 
-        return [
-            'payment_id' => $payment_id,
-            'html' => $this->generate_html($data),
-            'redirect_url'=>""
-        ];
+            $this->response->message = __("Paid Successfully");
+            $this->response->html =$this->generate_html($data);
+
+        } catch (\Exception $e) {
+
+            $this->response->message = $e->getMessage();
+            $this->saveToLogs();
+
+        }
+
+        return $this;
 
     }
 
-    /**
-     * @param Request $request
-     * @return array
-     */
-    public function verify(Request $request): array
+    public function verify(): self
     {
-        if ($request["paymentStatus"] == "SUCCESS") {
+
+        try {
+
+        if ($this->response->request['paymentStatus'] == "SUCCESS") {
             $queryString = "";
-            foreach ($request->all() as $key => $value) {
+            foreach ($this->response->request as $key => $value) {
 
                 if ($key == "signature" || $key == "mode") {
                     continue;
@@ -91,49 +97,39 @@ class KashierPayment extends BaseController implements PaymentInterface
 
             $queryString = ltrim($queryString, $queryString[0]);
             $signature = hash_hmac('sha256', $queryString, $this->kashier_iframe_key,false);
-            if ($signature == $request["signature"]) {
-                return [
-                    'success' => true,
-                    'payment_id'=>$request['merchantOrderId'],
-                    'message' => __('nafezly::messages.PAYMENT_DONE'),
-                    'process_data' => $request->all()
-                ];
+            if ($signature == $this->response->request["signature"]) {
+                $this->updateToPayment(PaymentStatusEnum::PAID);
+
+                $this->response->message = __("Paid Successfully");
+                
             } else {
-                return [
-                    'success' => false,
-                    'payment_id'=>$request['merchantOrderId'],
-                    'message' => __('nafezly::messages.PAYMENT_FAILED'),
-                    'process_data' => $request->all()
-                ];
+
+                $this->response->message = __('nafezly::messages.PAYMENT_FAILED');
+                $this->saveToLogs();
             }
-        }else if($request['signature']==null){
+        }else if($this->response->request['signature']==null){
             $url_mode = $this->kashier_mode == "live"?'':'test-';
             $response = Http::withHeaders([
                 'Authorization' => $this->kashier_token
-            ])->get('https://'.$url_mode.'api.kashier.io/payments/orders/'.$request['merchantOrderId'])->json();
+            ])->get('https://'.$url_mode.'api.kashier.io/payments/orders/'.$this->response->request['merchantOrderId'])->json();
             if(isset($response['response']['status']) && $response['response']['status']=="CAPTURED"){
-                return [
-                    'success' => true,
-                    'payment_id'=>$request['merchantOrderId'],
-                    'message' => __('nafezly::messages.PAYMENT_DONE'),
-                    'process_data' => $request->all()
-                ];
+                $this->updateToPayment(PaymentStatusEnum::PAID);
+
+                $this->response->message = __("Paid Successfully");
+
             }else{
-                return [
-                    'success' => false,
-                    'payment_id'=>$request['merchantOrderId'],
-                    'message' => __('nafezly::messages.PAYMENT_FAILED'),
-                    'process_data' => $request->all()
-                ];
+                $this->response->message = __('nafezly::messages.PAYMENT_FAILED');
+                $this->saveToLogs();
             }
             
         } else {
-            return [
-                'success' => false,
-                'payment_id'=>$request['merchantOrderId'],
-                'message' => __('nafezly::messages.PAYMENT_FAILED'),
-                'process_data' => $request->all()
-            ];
+            $this->response->message = __('nafezly::messages.PAYMENT_FAILED');
+            $this->saveToLogs();
+        }
+        } catch (\Exception $e) {
+
+            $this->response->message = $e->getMessage();
+            $this->saveToLogs();
         }
     }
 

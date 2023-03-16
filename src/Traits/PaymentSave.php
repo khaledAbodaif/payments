@@ -21,7 +21,7 @@ trait PaymentSave
                 "model_table" => $this->buyer?->getTable(),
                 "order_id" => $this->response->data['order_id'],
                 "order_table" => $this->response->data['order_table'],
-                "payment_method" => self::PPAYMENT_METHOD,
+                "payment_method" => static::PAYMENT_METHOD,
                 "payment_status" => PaymentStatusEnum::UNPAID,
                 "transaction_code" => $this->response->data['transaction_code'],
                 "amount" => $this->response->data['amount'],

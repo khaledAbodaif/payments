@@ -28,7 +28,10 @@ return [
 
     #FAWRY
     'FAWRY_URL' => env('FAWRY_URL', "https://atfawry.fawrystaging.com/"),//https://www.atfawry.com/ for production
+    'FAWRY_API_TESTING_URL' => env('FAWRY_API_TESTING_URL', "https://atfawry.fawrystaging.com/fawrypay-api/api/payments/init"),
+    'FAWRY_API_PROD_URL' => env('FAWRY_API_PROD_URL', "https://atfawry.com/fawrypay-api/api/payments/init"),
     'FAWRY_SECRET' => env('FAWRY_SECRET'),
+    'FAWRY_RETURN_URL' => env('FAWRY_RETURN_URL'),
     'FAWRY_MERCHANT' => env('FAWRY_MERCHANT'),
     'FAWRY_DISPLAY_MODE' => env('FAWRY_DISPLAY_MODE',"POPUP"),//required allowed values [POPUP, INSIDE_PAGE, SIDE_PAGE , SEPARATED]
     'FAWRY_PAY_MODE'=>env('FAWRY_PAY_MODE',"CARD"),//allowed values ['CashOnDelivery', 'PayAtFawry', 'MWALLET', 'CARD' , 'VALU']
@@ -41,9 +44,9 @@ return [
 
 
     #THAWANI
-    'THAWANI_API_KEY' => env('THAWANI_API_KEY', ''),
+    'THAWANI_API_KEY' => env('THAWANI_API_KEY', '123'),
     'THAWANI_URL' => env('THAWANI_URL', "https://uatcheckout.thawani.om/"),
-    'THAWANI_PUBLISHABLE_KEY' => env('THAWANI_PUBLISHABLE_KEY', ''),
+    'THAWANI_PUBLISHABLE_KEY' => env('THAWANI_PUBLISHABLE_KEY', 'HGvTMLDssJghr9tlN9gr4DVYt0qyBy'),
 
     #TAP
     'TAP_CURRENCY' => env('TAP_CURRENCY',"USD"),
@@ -74,6 +77,6 @@ return [
     'VERIFY_ROUTE_NAME' => "payment-verify",
     'APP_NAME'=>env('APP_NAME'),
 
-    
+
 
 ];

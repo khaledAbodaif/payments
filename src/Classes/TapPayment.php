@@ -8,13 +8,19 @@ use Illuminate\Http\Request;
 use Illuminate\Routing\Redirector;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Http;
+use Nafezly\Payments\Enums\PaymentStatusEnum;
+use Nafezly\Payments\Enums\PaymentValidationEnum;
 use Nafezly\Payments\Exceptions\MissingPaymentInfoException;
+use Nafezly\Payments\Interfaces\IPaymentInterface;
+use Nafezly\Payments\Interfaces\PaymentAbstract;
 use Nafezly\Payments\Interfaces\PaymentInterface;
 use Nafezly\Payments\Classes\BaseController;
 
 
-class TapPayment extends BaseController implements PaymentInterface
+class TapPayment extends PaymentAbstract implements IPaymentInterface
 {
+    public const PAYMENT_METHOD = "Tap";
+
     private $tap_secret_key;
     private $tap_public_key;
     private $tap_lang_code;
@@ -29,89 +35,96 @@ class TapPayment extends BaseController implements PaymentInterface
         $this->verify_route_name = config('nafezly-payments.VERIFY_ROUTE_NAME');
     }
 
-    /**
-     * @param $amount
-     * @param null $user_id
-     * @param null $user_first_name
-     * @param null $user_last_name
-     * @param null $user_email
-     * @param null $user_phone
-     * @param null $source
-     * @return Application|RedirectResponse|Redirector
-     * @throws MissingPaymentInfoException
-     */
-    public function pay($amount = null, $user_id = null, $user_first_name = null, $user_last_name = null, $user_email = null, $user_phone = null, $source = null)
+    public function pay(): self
     {
-        $this->setPassedVariablesToGlobal($amount, $user_id, $user_first_name, $user_last_name, $user_email, $user_phone, $source);
+        $this->validations = array_merge(PaymentValidationEnum::PAY_VALIDATION, PaymentValidationEnum::THAWANI_PAY_VALIDATION);
 
-        $required_fields = ['amount', 'user_first_name', 'user_last_name', 'user_email', 'user_phone'];
+        try {
 
-        $this->checkRequiredFields($required_fields, 'Tap');
+            $this->validate();
 
-        $unique_id = uniqid();
-        $response = Http::withHeaders([
-            "authorization" => "Bearer " . $this->tap_secret_key,
-            "content-type" => "application/json",
-            'lang_code' => $this->tap_lang_code
-        ])->post('https://api.tap.company/v2/charges', [
-            "amount" => $this->amount,
-            "currency" => $this->currency,
-            "threeDSecure" => true,
-            "save_card" => false,
-            "description" => "Cerdit",
-            "statement_descriptor" => "Cerdit",
-            "reference" => [
-                "transaction" => $unique_id,
-                "order" => $unique_id
-            ],
-            "receipt" => [
-                "email" => true,
-                "sms" => true
-            ], "customer" => [
-                "first_name" => $this->user_first_name,
-                "middle_name" => "",
-                "last_name" => $this->user_last_name,
-                "email" => $this->user_email,
-                "phone" => [
-                    "country_code" => "20",
-                    "number" => $this->user_phone
-                ]
-            ],
-            "source" => ["id" => "src_all"],
-            "post" => ["url" => route($this->verify_route_name, ['payment' => "tap"])],
-            "redirect" => ["url" => route($this->verify_route_name, ['payment' => "tap"])]
-        ])->json();
+            $this->saveToPayment();
 
-        return [
-            'payment_id' => $response['id'],
-            'redirect_url' => $response['transaction']['url'],
-            'html' => ""
-        ];
+            $unique_id = uniqid();
+            $response = Http::withHeaders([
+                "authorization" => "Bearer " . $this->tap_secret_key,
+                "content-type" => "application/json",
+                'lang_code' => $this->tap_lang_code
+            ])->post('https://api.tap.company/v2/charges', [
+                "amount" => $this->response->request['transaction_code'],
+                "currency" => $this->currency,
+                "threeDSecure" => true,
+                "save_card" => false,
+                "description" => "Cerdit",
+                "statement_descriptor" => "Cerdit",
+                "reference" => [
+                    "transaction" => $this->response->request['transaction_code'],
+                    "order" => $this->response->request['order_id']
+                ],
+                "receipt" => [
+                    "email" => true,
+                    "sms" => true
+                ], "customer" => [
+                    "first_name" => $this->buyer->name ?? "",
+                    "middle_name" => "",
+                    "last_name" => $this->buyer->name ?? "",
+                    "email" => $this->buyer->email ?? "",
+                    "phone" => [
+                        "country_code" => "20",
+                        "number" => $this->buyer->phone ?? ""
+                    ]
+                ],
+                "source" => ["id" => "src_all"],
+                "post" => ["url" => route($this->verify_route_name, ['payment' => "tap"])],
+                "redirect" => ["url" => route($this->verify_route_name, ['payment' => "tap"])]
+            ]);
+
+            if ($response->status() != 200) {
+
+                $this->response->errors = (array)json_decode($response->body());
+                $this->response->message = $response->body();
+                throw new \Exception('Something went wrong');
+
+            }
+            $response = $response->json();
+
+            $this->response->redirect_url = $response['transaction']['url'],
+
+        } catch (\Exception $e) {
+
+            $this->response->message = $e->getMessage();
+            $this->saveToLogs();
+
+        }
+
+        return $this;
     }
 
     /**
      * @param Request $request
      * @return array
      */
-    public function verify(Request $request): array
+    public function verify(): self
     {
+        try{
         $response = Http::withHeaders([
             "authorization" => "Bearer " . $this->tap_secret_key,
-        ])->get('https://api.tap.company/v2/charges/' . $request->tap_id)->json();
+        ])->get('https://api.tap.company/v2/charges/' . $this->response->request['tap_id'])->json();
         if (isset($response['status']) && $response['status'] == "CAPTURED") {
-            return [
-                'success' => true,
-                'payment_id' => $request->tap_id,
-                'message' => __('nafezly::messages.PAYMENT_DONE'),
-                'process_data' => $response
-            ];
+            $this->updateToPayment(PaymentStatusEnum::PAID);
+            $this->response->message = __("Paid Successfully");
+
         } else {
-            return [
-                'success' => false,
-                'payment_id' => $request->tap_id,
-                'message' => __('nafezly::messages.PAYMENT_FAILED'),
-                'process_data' => $response
-            ];
+            $this->response->status=false;
+            $this->response->message =$response;
+            $this->saveToLogs();
         }
+        } catch (\Exception $e) {
+
+            $this->response->message = $e->getMessage();
+            $this->saveToLogs();
+        }
+
+        return $this;
     }
 }
